@@ -7,7 +7,7 @@ local db = assert(cdb.make(db_name, db_name..".tmp"))
 db:add("one", "1")
 db:add("two", "2")
 db:add("three", "4") -- oops
-db:add("three", "3", "replace0")
+db:add("three", "3", "replace")
 db:add("three", "III")
 assert(db:finish())
 
@@ -23,11 +23,11 @@ do
     assert_nil(db:get("four"))
   end
 
-  function test_iter()
+  function test_pairs()
     local expected_keys = { "one", "two", "three", "three" }
     local expected_values = { "1", "2", "3", "III" }
     local i = 1
-    for k, v in db:iter() do
+    for k, v in db:pairs() do
       assert_equal(expected_keys[i], k)
       assert_equal(expected_values[i], v)
       i = i+1
@@ -39,5 +39,10 @@ do
     assert_equal(2, #t)
     assert_equal("3", t[1])
     assert_equal("III", t[2])
+  end
+
+  function test_closed_cdb()
+    db:close()
+    assert_error(nil, function() db:get("one") end)
   end
 end

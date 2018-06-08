@@ -10,96 +10,88 @@
 #define LCDB_DB "cdb.db"
 #define LCDB_MAKE "cdb.make"
 
-static struct cdb *push_cdb(lua_State *L)
-{
+static struct cdb *new_cdb(lua_State *L) {
   struct cdb *cdbp = (struct cdb*)lua_newuserdata(L, sizeof(struct cdb));
   luaL_getmetatable(L, LCDB_DB);
   lua_setmetatable(L, -2);
   return cdbp;
 }
 
-static struct cdb *check_cdb(lua_State *L, int n)
-{
+static struct cdb *check_cdb(lua_State *L, int n) {
   struct cdb *cdbp = (struct cdb*)luaL_checkudata(L, n, LCDB_DB);
-  if (cdbp->cdb_fd < 0)
-    luaL_error(L, "attempted to use a closed cdb");
+  luaL_argcheck(L, cdbp->cdb_fd >= 0, n, "attempted to use a closed cdb");
   return cdbp;
 }
 
-static int push_errno(lua_State *L, int xerrno)
-{
+static int push_errno(lua_State *L, int xerrno) {
   lua_pushnil(L);
   lua_pushstring(L, strerror(xerrno));
   return 2;
 }
 
-static int lcdb_open(lua_State *L)
-{
+/* cdb.open(filename) */
+static int lcdb_open(lua_State *L) {
   struct cdb *cdbp;
   const char *filename = luaL_checkstring(L, 1);
+  int ret;
 
   int fd = open(filename, O_RDONLY);
   if (fd < 0)
     return push_errno(L, errno);
 
-  cdbp = push_cdb(L);
-  cdb_init(cdbp, fd);
+  cdbp = new_cdb(L);
+  ret = cdb_init(cdbp, fd);
+  if (ret < 0) {
+    lua_pushnil(L);
+    lua_pushfstring(L, LCDB_DB": file %s is not a valid database (or mmap failed)", filename);
+    return 2;
+  }
   return 1;
 }
 
-static int lcdbm_gc(lua_State *L)
-{
+/* db:close() */
+static int lcdbm_gc(lua_State *L) {
   struct cdb *cdbp = (struct cdb*)luaL_checkudata(L, 1, LCDB_DB);
-  if (cdbp->cdb_fd >= 0)
-  {
-    int fd = cdbp->cdb_fd;
+  if (cdbp->cdb_fd >= 0) {
+    close(cdbp->cdb_fd);
     cdb_free(cdbp);
-    close(fd);
     cdbp->cdb_fd = -1;
   }
   return 0;
 }
 
-static int lcdbm_tostring(lua_State *L)
-{
+/* db:__tostring() */
+static int lcdbm_tostring(lua_State *L) {
   struct cdb *cdbp = (struct cdb*)luaL_checkudata(L, 1, LCDB_DB);
   if (cdbp->cdb_fd >= 0)
     lua_pushfstring(L, "<"LCDB_DB"> (%p)", cdbp);
   else
     lua_pushfstring(L, "<"LCDB_DB"> (closed)");
-  return 0;
+  return 1;
 }
 
-static int lcdbm_get(lua_State *L)
-{
+/* db:get(key) */
+static int lcdbm_get(lua_State *L) {
   size_t klen;
-  unsigned vlen, vpos;
   int ret;
   struct cdb *cdbp = check_cdb(L, 1);
   const char *key = luaL_checklstring(L, 2, &klen);
 
   ret = cdb_find(cdbp, key, klen);
-  if (ret > 0)
-  {
-    vpos = cdb_datapos(cdbp);
-    vlen = cdb_datalen(cdbp);
-    lua_pushlstring(L, cdb_get(cdbp, vlen, vpos), vlen);
+  if (ret > 0) {
+    lua_pushlstring(L, cdb_getdata(cdbp), cdb_datalen(cdbp));
     return 1;
-  }
-  else if (ret == 0)
-  {
+  } else if (ret == 0) {
     lua_pushnil(L);
     return 1;
-  }
-  else /* ret < 0 */
-  {
-    return push_errno(L, errno);
+  } else {
+    return luaL_error(L, LCDB_DB": error in find. Database corrupt?");
   }
 }
 
-static int lcdbm_find_all(lua_State *L)
-{
-  unsigned klen;
+/* db:find_all(key) */
+static int lcdbm_find_all(lua_State *L) {
+  size_t klen;
   int ret;
   int n = 1;
   struct cdb *cdbp = check_cdb(L, 1);
@@ -109,52 +101,39 @@ static int lcdbm_find_all(lua_State *L)
   cdb_findinit(&cdbf, cdbp, key, klen);
 
   lua_newtable(L);
-  while((ret = cdb_findnext(&cdbf)))
-  {
-    unsigned vpos, vlen;
-    if (ret < 0) /* error */
-      return push_errno(L, errno);
+  while((ret = cdb_findnext(&cdbf))) {
+    if (ret < 0) { /* error */
+      return luaL_error(L, LCDB_DB": error in find_all. Database corrupt?");
+    }
 
-    vpos = cdb_datapos(cdbp);
-    vlen = cdb_datalen(cdbp);
-    lua_pushlstring(L, cdb_get(cdbp, vlen, vpos), vlen);
+    lua_pushlstring(L, cdb_getdata(cdbp), cdb_datalen(cdbp));
     lua_rawseti(L, -2, n);
     n++;
   }
   return 1;
 }
   
-static int lcdbm_iternext(lua_State *L)
-{
+static int lcdbm_iternext(lua_State *L) {
   struct cdb *cdbp = (struct cdb*)lua_touserdata(L, lua_upvalueindex(1));
   unsigned pos = lua_tointeger(L, lua_upvalueindex(2));
 
   int ret = cdb_seqnext(&pos, cdbp);
   lua_pushinteger(L, pos);
   lua_replace(L, lua_upvalueindex(2));
-  if (ret > 0)
-  {
-    int klen = cdb_keylen(cdbp);
-    int kpos = cdb_keypos(cdbp);
-    lua_pushlstring(L, cdb_get(cdbp, klen, kpos), klen);
-    int vlen = cdb_datalen(cdbp);
-    int vpos = cdb_datapos(cdbp);
-    lua_pushlstring(L, cdb_get(cdbp, vlen, vpos), vlen);
+  if (ret > 0) {
+    lua_pushlstring(L, cdb_getkey(cdbp), cdb_keylen(cdbp));
+    lua_pushlstring(L, cdb_getdata(cdbp), cdb_datalen(cdbp));
     return 2;
-  }
-  else if (ret == 0) /* finished */
-  {
+  } else if (ret == 0) { /* finished */
     lua_pushnil(L);
     return 1;
-  }
-  else /* ret < 0, error */
-  {
-    return push_errno(L, errno);
+  } else { /* error */
+    return luaL_error(L, LCDB_DB": error in iterator. Database corrupt?");
   }
 }
 
-static int lcdbm_iter(lua_State *L)
-{
+/* for k, v in db:pairs() do ... end */
+static int lcdbm_pairs(lua_State *L) {
   struct cdb *cdbp = check_cdb(L, 1);
 
   unsigned pos;
@@ -164,8 +143,7 @@ static int lcdbm_iter(lua_State *L)
   return 1;
 }
 
-static struct cdb_make *push_cdb_make(lua_State *L)
-{
+static struct cdb_make *new_cdb_make(lua_State *L) {
   struct cdb_make *cdbmp = (struct cdb_make*)lua_newuserdata(L, sizeof(struct cdb_make));
   luaL_getmetatable(L, LCDB_MAKE);
   lua_setmetatable(L, -2);
@@ -174,16 +152,14 @@ static struct cdb_make *push_cdb_make(lua_State *L)
   return cdbmp;
 }
 
-static struct cdb_make *check_cdb_make(lua_State *L, int n)
-{
+static struct cdb_make *check_cdb_make(lua_State *L, int n) {
   struct cdb_make *cdbmp = luaL_checkudata(L, n, LCDB_MAKE);
-  if (cdb_fileno(cdbmp) < 0)
-    luaL_error(L, "attemped to use a closed cdb_make");
+  luaL_argcheck(L, cdbmp->cdb_fd >= 0, n, "attempted to use a closed cdb_make");
   return cdbmp;
 }
 
-static int lcdb_make(lua_State *L)
-{
+/* cdb.make(destination, temporary) */
+static int lcdb_make(lua_State *L) {
   int fd;
   int ret;
   struct cdb_make *cdbmp;
@@ -194,7 +170,7 @@ static int lcdb_make(lua_State *L)
   if (fd < 0)
     return push_errno(L, errno);
 
-  cdbmp = push_cdb_make(L);
+  cdbmp = new_cdb_make(L);
   ret = cdb_make_start(cdbmp, fd);
 
   /* store destination and tmpname in userdata environment */
@@ -210,21 +186,19 @@ static int lcdb_make(lua_State *L)
   return 1;
 }
 
-static int lcdbmakem_gc(lua_State *L)
-{
+static int lcdbmakem_gc(lua_State *L) {
   struct cdb_make *cdbmp = luaL_checkudata(L, 1, LCDB_MAKE);
 
-  if (cdbmp->cdb_fd >= 0)
-  {
+  if (cdbmp->cdb_fd >= 0) {
     close(cdbmp->cdb_fd);
-    cdbmp->cdb_fd = -1;
     cdb_make_free(cdbmp);
+    cdbmp->cdb_fd = -1;
   }
   return 0;
 }
 
-static int lcdbmakem_tostring(lua_State *L)
-{
+/* maker:__tostring() */
+static int lcdbmakem_tostring(lua_State *L) {
   struct cdb_make *cdbmp = luaL_checkudata(L, 1, LCDB_MAKE);
 
   if (cdbmp->cdb_fd >= 0)
@@ -234,10 +208,10 @@ static int lcdbmakem_tostring(lua_State *L)
   return 1;
 }
 
-static int lcdbmakem_add(lua_State *L)
-{
-  static const char *const opts[] = { "add", "replace", "insert", "warn", "replace0", NULL };
-  unsigned klen, vlen;
+/* maker:add(key, value, [mode]) */
+static int lcdbmakem_add(lua_State *L) {
+  static const char *const opts[] = { "add", "replace", "replace0", "insert", NULL };
+  size_t klen, vlen;
   struct cdb_make *cdbmp = check_cdb_make(L, 1);
   const char *key = luaL_checklstring(L, 2, &klen);
   const char *value = luaL_checklstring(L, 3, &vlen);
@@ -246,12 +220,12 @@ static int lcdbmakem_add(lua_State *L)
 
   int ret = cdb_make_put(cdbmp, key, klen, value, vlen, mode);
   if (ret < 0)
-    return push_errno(L, errno);
+    return luaL_error(L, strerror(errno));
   return 0;
 }
 
-static int lcdbmakem_finish(lua_State *L)
-{
+/* maker:finish() */
+static int lcdbmakem_finish(lua_State *L) {
   struct cdb_make *cdbmp = check_cdb_make(L, 1);
   /* retrieve destination, current filename */
   lua_getfenv(L, -1);
@@ -262,10 +236,10 @@ static int lcdbmakem_finish(lua_State *L)
   lua_pop(L, 3);
 
   if (cdb_make_finish(cdbmp) < 0 || fsync(cdb_fileno(cdbmp)) < 0 || 
-      close(cdb_fileno(cdbmp)) < 0 || rename(tmpname, dest) < 0)
-  {
-    cdbmp->cdb_fd = -1; // fatal errors, already freed cdbmp
-    return push_errno(L, errno);
+      close(cdb_fileno(cdbmp)) < 0 || rename(tmpname, dest) < 0) {
+    cdb_make_free(cdbmp); /* in case cdb_make_finish failed before freeing */
+    cdbmp->cdb_fd = -1;
+    return luaL_error(L, strerror(errno));
   }
 
   cdbmp->cdb_fd = -1;
@@ -285,7 +259,8 @@ static const struct luaL_Reg lcdb_m [] = {
   {"__tostring", lcdbm_tostring},
   {"find_all", lcdbm_find_all},
   {"get", lcdbm_get},
-  {"iter", lcdbm_iter},
+  {"pairs", lcdbm_pairs},
+  {"iter", lcdbm_pairs},
   {NULL, NULL}
 };
 
@@ -297,8 +272,7 @@ static const struct luaL_Reg lcdbmake_m [] = {
   {NULL, NULL}
 };
 
-int luaopen_cdb(lua_State *L)
-{
+int luaopen_cdb(lua_State *L) {
   luaL_newmetatable(L, LCDB_DB);
   lua_pushvalue(L, -1);
   lua_setfield(L, -2, "__index");

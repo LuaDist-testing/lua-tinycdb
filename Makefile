@@ -1,4 +1,4 @@
-VERSION= 0.1
+VERSION= 0.2
 
 # change these to reflect your Lua installation
 LUA= /usr
@@ -21,10 +21,8 @@ SOS= cdb.so
 
 all: $(SOS)
 
-LIBFLAG=-shared
-
 $(SOS): $(OBJS)
-	$(CC) -o $@ $(LIBFLAG) $(OBJS) $(LIBS)
+	$(CC) -o $@ -shared $(OBJS) $(LIBS)
 
 .PHONY: clean test distr
 clean:
@@ -34,5 +32,5 @@ test: all
 	./lunit test.lua
 
 tar: clean
-	git archive --format=tar --prefix=lua-tinycdb-$(VERSION)/ v$(VERSION) | gzip > lua-tinycdb-$(VERSION).tar.gz
+	git archive --format=tar --prefix=lua-tinycdb-$(VERSION)/ $(VERSION) | gzip > lua-tinycdb-$(VERSION).tar.gz
 
