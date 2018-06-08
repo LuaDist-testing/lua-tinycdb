@@ -1,10 +1,27 @@
 -- This file was automatically generated for the LuaDist project.
 
+local makefile_patch = [[
+--- lua-tinycdb-0.1/Makefile.orig	2008-09-30 17:13:17.000000000 -0300
++++ lua-tinycdb-0.1/Makefile	2008-09-30 17:13:47.000000000 -0300
+@@ -21,8 +21,10 @@
+ 
+ all: $(SOS)
+ 
++LIBFLAG=-shared
++
+ $(SOS): $(OBJS)
+-	$(CC) -o $@ -shared $(OBJS) $(LIBS)
++	$(CC) -o $@ $(LIBFLAG) $(OBJS) $(LIBS)
+ 
+ .PHONY: clean test distr
+ clean:
+]]
+
 package="lua-tinycdb"
-version="0.1-1"
+version="0.1-2"
 -- LuaDist source
 source = {
-  tag = "0.1-1",
+  tag = "0.1-2",
   url = "git://github.com/LuaDist-testing/lua-tinycdb.git"
 }
 -- Original source
@@ -26,9 +43,13 @@ build = {
    build_variables = {
       LUAINC = "$(LUA_INCDIR)",
       LUALIB = "$(LUA_LIBDIR)",
-      LUABIN = "$(LUA_BINDIR)"
+      LUABIN = "$(LUA_BINDIR)",
+      LIBFLAG = "$(LIBFLAG)"
    },
    install = {
       lib = { "cdb.so" },
+   },
+   patches = {
+      makefile_patch = makefile_patch
    }
 }

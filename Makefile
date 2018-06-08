@@ -21,8 +21,10 @@ SOS= cdb.so
 
 all: $(SOS)
 
+LIBFLAG=-shared
+
 $(SOS): $(OBJS)
-	$(CC) -o $@ -shared $(OBJS) $(LIBS)
+	$(CC) -o $@ $(LIBFLAG) $(OBJS) $(LIBS)
 
 .PHONY: clean test distr
 clean:
